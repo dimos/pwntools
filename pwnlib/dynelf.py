@@ -251,7 +251,7 @@ class DynELF(object):
             elf = ELF(path)
         elf.address = self.libbase
 
-        w = self.waitfor("Loading from %r" % elf.path)
+        self.waitfor("Loading from %r" % elf.path)
 
         # Save our real leaker
         real_leak = self.leak
@@ -270,18 +270,17 @@ class DynELF(object):
         self.leak = fake_leak
 
         # Get useful pointers for resolving the linkmap faster
-        w.status("Searching for DT_PLTGOT")
+        self.status("Searching for DT_PLTGOT")
         pltgot = self._find_dt(constants.DT_PLTGOT)
 
-        w.status("Searching for DT_DEBUG")
+        self.status("Searching for DT_DEBUG")
         debug  = self._find_dt(constants.DT_DEBUG)
 
         # Restore the real leaker
         self.leak = real_leak
 
         # Find the linkmap using the helper pointers
-        self._find_linkmap(pltgot, debug)
-        self.success('Done')
+        self._link_map = self._find_linkmap(pltgot, debug)
 
     def _find_base(self, ptr):
         page_size = 0x1000
@@ -426,7 +425,7 @@ class DynELF(object):
         For RELRO binaries, a pointer is additionally stored in the DT_DEBUG
         area.
         """
-        w = self.waitfor("Finding linkmap")
+        self.waitfor("Finding linkmap")
 
         Got     = {32: elf.Elf_i386_GOT, 64: elf.Elf_x86_64_GOT}[self.elfclass]
         r_debug = {32: elf.Elf32_r_debug, 64: elf.Elf64_r_debug}[self.elfclass]
@@ -434,28 +433,28 @@ class DynELF(object):
         linkmap = None
 
         if not pltgot:
-            w.status("Finding linkmap: DT_PLTGOT")
+            self.status("Searching for DT_PLTGOT")
             pltgot = self._find_dt(constants.DT_PLTGOT)
 
         if pltgot:
-            w.status("GOT.linkmap")
+            self.status("GOT.linkmap")
             linkmap = self.leak.field(pltgot, Got.linkmap)
-            w.status("GOT.linkmap %#x" % linkmap)
+            self.status("GOT.linkmap %#x" % linkmap)
 
         if not linkmap:
             debug = debug or self._find_dt(constants.DT_DEBUG)
             if debug:
-                w.status("r_debug.linkmap")
+                self.status("r_debug.linkmap")
                 linkmap = self.leak.field(debug, r_debug.r_map)
-                w.status("r_debug.linkmap %#x" % linkmap)
+                self.status("r_debug.linkmap %#x" % linkmap)
 
         if not linkmap:
-            w.failure("Could not find DT_PLTGOT or DT_DEBUG")
+            self.failure("Could not find DT_PLTGOT or DT_DEBUG")
             return None
 
         linkmap = self._make_absolute_ptr(linkmap)
 
-        w.success('%#x' % linkmap)
+        self.success('Found linkmap @ %#x' % linkmap)
         return linkmap
 
     def waitfor(self, msg):
@@ -584,7 +583,7 @@ class DynELF(object):
         #
         # Did we win?
         #
-        if result: self.success("%#x" % result)
+        if result: self.success("Found %s: %#x" % (pretty, result))
         else:      self.failure("Could not find %s" % pretty)
 
         return result
@@ -631,6 +630,8 @@ class DynELF(object):
         leak    = self.leak
         LinkMap = {32: elf.Elf32_Link_Map, 64: elf.Elf64_Link_Map}[self.elfclass]
 
+        self.waitfor('Resolving %r' % libname)
+
         # make sure we rewind to the beginning!
         while leak.field(cur, LinkMap.l_prev):
             cur = leak.field(cur, LinkMap.l_prev)
@@ -653,11 +654,11 @@ class DynELF(object):
 
         libbase = leak.field(cur, LinkMap.l_addr)
 
-        self.status("Resolved library %r at %#x" % (libname, libbase))
+        self.success("Resolved library %r at %#x" % (libname, libbase))
 
         lib = DynELF(leak, libbase)
         lib._dynamic = leak.field(cur, LinkMap.l_ld)
-        lib._waitfor = self._waitfor
+        #lib._waitfor = self._waitfor
         return lib
 
     def _lookup(self, symb):
@@ -841,9 +842,6 @@ class DynELF(object):
         if not self.link_map:
             self.status("No linkmap found")
             return None
-
-        if lib is not None:
-            libbase = self.lookup(symb = None, lib = lib)
 
         if not libbase:
             self.status("Couldn't find libc base")
